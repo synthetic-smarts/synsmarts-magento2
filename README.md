@@ -12,7 +12,13 @@ platform ships; it exists so you can inspect, test, and verify them.
 
 The platform injects this tree into your built store image at
 `app/code/Synsmarts/AwsCredentialsIsolation` and the image build fails unless
-the module is registered and its DI preference compiled.
+the module is registered and its DI preference compiled. The provider it
+replaces ships with `magento/module-aws-s3` 100.4.5 (Magento 2.4.7). A store
+on an older release has no such provider and keeps no shared credential cache,
+so its build removes the tree instead and prints
+`AWS_CREDENTIALS_ISOLATION_SKIPPED_NO_CACHED_PROVIDER` in the build log; that
+line is the evidence on such a store, and there is nothing to diff until it
+upgrades.
 
 ## Verify the published bytes
 
@@ -28,7 +34,10 @@ d=$(mktemp -d) && git clone --quiet --depth 1 --branch <tag> \
   && echo "verified: identical"
 ```
 
-Run it from your store root. Your workspace carries the copy it was
+Run it from your store root on a store at Magento 2.4.7 or later. On an
+older release the built image carries no tree, so a workspace copy there is
+inert whatever the `diff` says, and the build log's skip line above is the
+check. Your workspace carries the copy it was
 seeded with at provisioning, so after a shim update it can lag the image
 your production pods run — a workspace mismatch means your workspace copy
 is older or locally modified, never that production drifted. Tags are
