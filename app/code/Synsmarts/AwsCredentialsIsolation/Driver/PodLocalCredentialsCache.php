@@ -72,55 +72,66 @@ class PodLocalCredentialsCache implements CacheInterface
             return;
         }
 
-        if (!$this->ensureDirectory()) {
-            return;
-        }
-        $path = $this->path((string) $key);
-        $handle = @fopen($path, 'c+b');
-        if ($handle === false) {
+        $expiration = $value->getExpiration();
+        $cacheExpiration = $ttl > 0 ? time() + (int) $ttl : $expiration;
+        if ($cacheExpiration === null) {
             return;
         }
 
         try {
-            @chmod($path, 0600);
-            if (!flock($handle, LOCK_EX)) {
-                return;
-            }
+            $payload = json_encode(
+                [
+                    'key' => $value->getAccessKeyId(),
+                    'secret' => $value->getSecretKey(),
+                    'token' => $value->getSecurityToken(),
+                    'expires' => $expiration,
+                    'cache_expires_at' => $cacheExpiration,
+                    'account_id' => method_exists($value, 'getAccountId')
+                        ? $value->getAccountId()
+                        : null,
+                    'source' => method_exists($value, 'getSource')
+                        ? $value->getSource()
+                        : null,
+                ],
+                JSON_THROW_ON_ERROR
+            );
+        } catch (\JsonException $exception) {
+            return;
+        }
 
-            $expiration = $value->getExpiration();
-            $cacheExpiration = $ttl > 0 ? time() + (int) $ttl : $expiration;
-            if ($cacheExpiration === null) {
-                return;
-            }
+        if (!$this->ensureDirectory()) {
+            return;
+        }
+        $path = $this->path((string) $key);
+        try {
+            $temporary = $path . '.' . bin2hex(random_bytes(8)) . '.tmp';
+        } catch (\Exception $exception) {
+            return;
+        }
 
-            try {
-                $payload = json_encode(
-                    [
-                        'key' => $value->getAccessKeyId(),
-                        'secret' => $value->getSecretKey(),
-                        'token' => $value->getSecurityToken(),
-                        'expires' => $expiration,
-                        'cache_expires_at' => $cacheExpiration,
-                        'account_id' => method_exists($value, 'getAccountId')
-                            ? $value->getAccountId()
-                            : null,
-                        'source' => method_exists($value, 'getSource')
-                            ? $value->getSource()
-                            : null,
-                    ],
-                    JSON_THROW_ON_ERROR
-                );
-            } catch (\JsonException $exception) {
-                return;
-            }
-
-            rewind($handle);
-            ftruncate($handle, 0);
-            fwrite($handle, $payload);
-            fflush($handle);
-            flock($handle, LOCK_UN);
+        // Callers run under Magento's error handler, which throws on any
+        // reported error, so every filesystem call is silenced and checked.
+        // The payload goes to a private temporary file renamed over the
+        // cache file, so a failed write leaves the cached copy intact.
+        $handle = @fopen($temporary, 'xb');
+        if ($handle === false) {
+            return;
+        }
+        $replaced = false;
+        try {
+            $written = @chmod($temporary, 0600)
+                && @fwrite($handle, $payload) === strlen($payload)
+                && @fflush($handle);
+            @fclose($handle);
+            $handle = null;
+            $replaced = $written && @rename($temporary, $path);
         } finally {
-            fclose($handle);
+            if ($handle !== null) {
+                @fclose($handle);
+            }
+            if (!$replaced) {
+                @unlink($temporary);
+            }
         }
     }
 
